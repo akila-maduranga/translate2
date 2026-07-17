@@ -5,13 +5,19 @@
  * We target the DeepSeek V4 model family:
  *
  *   - deepseek-v4-pro   — 1.6T/49B MoE, strongest reasoning & world
- *                          knowledge. Used everywhere by default
- *                          because translation accuracy matters more
- *                          than the small extra cost/latency.
- *   - deepseek-v4-flash — 284B/13B MoE, cheaper/faster. Can be
- *                          selected per-call or globally via the
- *                          DEEPSEEK_MODEL env var if cost is a
- *                          concern.
+ *                          knowledge but noticeably slower. Used for
+ *                          the one-off, quality-critical research
+ *                          brief (built once per movie).
+ *   - deepseek-v4-flash — 284B/13B MoE, much faster and cheaper,
+ *                          still strong. Used as the default for
+ *                          translation batches, which run many times
+ *                          per subtitle file — this is what was
+ *                          timing out under v4-pro's latency. Overall
+ *                          accuracy comes mainly from the locked
+ *                          glossary/brief (v4-pro) + strict prompting,
+ *                          not from which model translates each
+ *                          batch, so flash keeps quality high while
+ *                          fixing the timeouts.
  *
  * The legacy `deepseek-chat` / `deepseek-reasoner` aliases are being
  * retired by DeepSeek on 2026-07-24, so we no longer reference them.
@@ -36,9 +42,16 @@
 
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
 
-/** Default model for all DeepSeek calls. Override with DEEPSEEK_MODEL. */
+/** Default model for research/one-off calls. Override with DEEPSEEK_MODEL. */
 export const DEFAULT_DEEPSEEK_MODEL =
   process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-pro";
+
+/**
+ * Default model for high-volume translation batches, where latency
+ * compounds across many calls. Override with DEEPSEEK_TRANSLATE_MODEL.
+ */
+export const DEFAULT_TRANSLATE_MODEL =
+  process.env.DEEPSEEK_TRANSLATE_MODEL?.trim() || "deepseek-v4-flash";
 
 export interface DeepSeekMessage {
   role: "system" | "user" | "assistant";
@@ -58,7 +71,43 @@ export interface DeepSeekCallOptions {
    * see module docblock for why.
    */
   thinking?: boolean;
+  /**
+   * Abort the request after this many ms and throw a `DeepSeekTimeoutError`.
+   * Lets callers fail fast and retry (e.g. with a smaller batch) well
+   * before the serverless function's own hard maxDuration kills the
+   * whole request with an opaque 504.
+   */
+  timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+export class DeepSeekTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`DeepSeek call timed out after ${ms}ms`);
+    this.name = "DeepSeekTimeoutError";
+  }
+}
+
+/** Combine a caller-supplied AbortSignal with an internal timeout. */
+function withTimeout(
+  timeoutMs: number | undefined,
+  outerSignal: AbortSignal | undefined
+): { signal: AbortSignal | undefined; cleanup: () => void } {
+  if (!timeoutMs) return { signal: outerSignal, cleanup: () => {} };
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DeepSeekTimeoutError(timeoutMs)),
+    timeoutMs
+  );
+  const onOuterAbort = () => controller.abort(outerSignal?.reason);
+  outerSignal?.addEventListener("abort", onOuterAbort);
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      outerSignal?.removeEventListener("abort", onOuterAbort);
+    },
+  };
 }
 
 export interface DeepSeekCallResult {
@@ -93,15 +142,26 @@ export async function callDeepSeek(
     body.response_format = { type: "json_object" };
   }
 
-  const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${opts.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
+  let res: Response;
+  try {
+    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${opts.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted && signal.reason instanceof DeepSeekTimeoutError) {
+      throw signal.reason;
+    }
+    throw err;
+  } finally {
+    cleanup();
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -147,17 +207,28 @@ export async function* streamDeepSeek(
     body.response_format = { type: "json_object" };
   }
 
-  const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${opts.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
+  let res: Response;
+  try {
+    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${opts.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    cleanup();
+    if (signal?.aborted && signal.reason instanceof DeepSeekTimeoutError) {
+      throw signal.reason;
+    }
+    throw err;
+  }
 
   if (!res.ok || !res.body) {
+    cleanup();
     const text = await res.text().catch(() => "");
     throw new Error(`DeepSeek ${res.status}: ${text}`);
   }
@@ -166,26 +237,35 @@ export async function* streamDeepSeek(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (data === "[DONE]") return;
-      try {
-        const json = JSON.parse(data);
-        const delta = json.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          yield delta;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta.length > 0) {
+            yield delta;
+          }
+        } catch {
+          // ignore partial JSON
         }
-      } catch {
-        // ignore partial JSON
       }
     }
+  } catch (err) {
+    if (signal?.aborted && signal.reason instanceof DeepSeekTimeoutError) {
+      throw signal.reason;
+    }
+    throw err;
+  } finally {
+    cleanup();
   }
 }

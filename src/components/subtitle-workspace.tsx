@@ -143,7 +143,7 @@ export function SubtitleWorkspace({
     const ac = new AbortController();
     abortRef.current = ac;
 
-    const batchSize = 8;  // sensible default, no longer user-configurable
+    const batchSize = 6;   // smaller batches translate faster on deepseek-v4-flash
     const rolling = 6;    // more prior context = more consistent, accurate translations
     const localCues = cues.map((c) => ({ ...c }));
     const startTime = Date.now();

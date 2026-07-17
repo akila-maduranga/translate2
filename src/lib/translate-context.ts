@@ -23,7 +23,7 @@
  */
 
 import type { TranslationContextBundle } from "@/lib/tmdb";
-import { callDeepSeek, streamDeepSeek } from "@/lib/deepseek";
+import { callDeepSeek, streamDeepSeek, DEFAULT_TRANSLATE_MODEL } from "@/lib/deepseek";
 import type { SubtitleCue } from "@/lib/subtitle";
 import { toonStringify } from "@/lib/toon";
 
@@ -100,6 +100,7 @@ Produce the translation brief JSON now. Schema:
     temperature: 0.2,
     responseFormat: "json_object",
     maxTokens: 3500,
+    timeoutMs: 120_000,
     signal: opts?.signal,
   });
 
@@ -143,6 +144,7 @@ Produce the translation brief JSON now. Use Sinhala Unicode script (අ-෴) for
       { role: "user", content: userPrompt },
     ],
     temperature: 0.2,
+    timeoutMs: 200_000,
     signal: opts?.signal,
   })) {
     full += chunk;
@@ -259,10 +261,15 @@ export interface TranslateBatchInput {
   currentCues: SubtitleCue[]; // untranslated, to translate
 }
 
-export async function translateBatch(
+/** Per-attempt budget, well under any route's maxDuration so we can
+ *  fail fast and retry with a smaller batch instead of letting
+ *  Vercel's hard timeout kill the whole request. */
+const TRANSLATE_ATTEMPT_TIMEOUT_MS = 25_000;
+
+async function translateBatchOnce(
   input: TranslateBatchInput,
   apiKey: string,
-  opts?: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void }
+  opts?: { signal?: AbortSignal }
 ): Promise<string[]> {
   const { brief, previousCues, currentCues } = input;
 
@@ -320,6 +327,7 @@ ${toonPayload}`;
 
   const result = await callDeepSeek({
     apiKey,
+    model: DEFAULT_TRANSLATE_MODEL,
     messages: [
       { role: "system", content: TRANSLATION_SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
@@ -327,6 +335,7 @@ ${toonPayload}`;
     temperature: 0.15,
     responseFormat: "json_object",
     maxTokens: Math.min(8000, 400 + currentCues.length * 200),
+    timeoutMs: TRANSLATE_ATTEMPT_TIMEOUT_MS,
     signal: opts?.signal,
   });
 
@@ -352,8 +361,57 @@ ${toonPayload}`;
   while (arr.length < currentCues.length) arr.push("");
   if (arr.length > currentCues.length) arr = arr.slice(0, currentCues.length);
 
-  opts?.onProgress?.(currentCues.length, currentCues.length);
   return arr;
+}
+
+/**
+ * Translate a batch of cues, automatically retrying with a smaller
+ * (halved) batch if a call times out or errors — instead of the
+ * whole request failing/timing out. Bottoms out at single-cue calls;
+ * if even that fails, the cue is left untranslated (empty string)
+ * rather than blocking the rest of the file.
+ */
+export async function translateBatch(
+  input: TranslateBatchInput,
+  apiKey: string,
+  opts?: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void }
+): Promise<string[]> {
+  const { brief, previousCues, currentCues } = input;
+
+  try {
+    const arr = await translateBatchOnce(input, apiKey, opts);
+    opts?.onProgress?.(currentCues.length, currentCues.length);
+    return arr;
+  } catch (err) {
+    if (opts?.signal?.aborted) throw err; // user cancelled — don't retry
+    if (currentCues.length <= 1) {
+      // Nothing smaller to fall back to — surface empty translation
+      // rather than failing the whole file.
+      opts?.onProgress?.(currentCues.length, currentCues.length);
+      return currentCues.map(() => "");
+    }
+    const mid = Math.ceil(currentCues.length / 2);
+    const firstHalf = currentCues.slice(0, mid);
+    const secondHalf = currentCues.slice(mid);
+
+    const firstResult = await translateBatch(
+      { brief, previousCues, currentCues: firstHalf },
+      apiKey,
+      opts
+    );
+    // Thread the now-translated first half into the rolling context
+    // for the second half so glossary/tone consistency isn't lost.
+    const bridgedPrevious = [
+      ...previousCues,
+      ...firstHalf.map((c, i) => ({ ...c, translated: firstResult[i] })),
+    ];
+    const secondResult = await translateBatch(
+      { brief, previousCues: bridgedPrevious, currentCues: secondHalf },
+      apiKey,
+      opts
+    );
+    return [...firstResult, ...secondResult];
+  }
 }
 
 /**
@@ -372,7 +430,7 @@ export async function* translateAllInBatches(
     onCueTranslated?: (cueIndex: number, sinhala: string) => void;
   } = {}
 ): AsyncGenerator<{ done: number; total: number; cue: SubtitleCue }, void, unknown> {
-  const batchSize = opts.batchSize ?? 8;
+  const batchSize = opts.batchSize ?? 6;
   const rolling = opts.rollingContext ?? 6;
 
   for (let i = 0; i < cues.length; i += batchSize) {

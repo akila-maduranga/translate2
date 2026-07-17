@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { callDeepSeek } from "@/lib/deepseek";
+import { callDeepSeek, DEFAULT_TRANSLATE_MODEL } from "@/lib/deepseek";
 import type { TranslationContextBundle } from "@/lib/tmdb";
 import { getCurrentUser } from "@/lib/auth";
 
@@ -71,6 +71,7 @@ Rules:
   try {
     const result = await callDeepSeek({
       apiKey,
+      model: DEFAULT_TRANSLATE_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -78,6 +79,7 @@ Rules:
       temperature: 0.1,
       responseFormat: "json_object",
       maxTokens: 2500,
+      timeoutMs: 40_000,
     });
 
     let parsed: {
