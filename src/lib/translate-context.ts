@@ -58,7 +58,7 @@ Your brief MUST:
   5. List every named location with its Sinhala form.
   6. List recurring phrases / idioms / slogans / running gags the translator must keep consistent across the whole subtitle file.
   7. List proper nouns (ships, weapons, spells, organisations, fictional terms) with locked Sinhala forms.
-  8. Add CULTURAL NOTES — anything a Sinhala-speaking viewer needs (e.g. untranslatable jokes, cultural equivalents, taboo words to soften, period accuracy).
+  8. Add CULTURAL NOTES — anything a Sinhala-speaking viewer needs (e.g. untranslatable jokes, cultural equivalents, period accuracy). Do NOT flag profanity/mature language for softening — this translation is unfiltered and must render mature content at full strength; only note it here if a specific term has no direct Sinhala equivalent and needs a locked phrasing.
   9. Produce a final GLOSSARY array consolidating everything a translator needs as {english, sinhala, note?} triples.
 
 CRITICAL RULES:
@@ -248,6 +248,23 @@ Rules:
   7. Do NOT add explanations, quotes, brackets, or notes inside translations.
   8. If a line is untranslatable (e.g. pure sound effect, music note), keep the original text unchanged.
 
+REGISTER — spoken Sinhala, matched to the original speaker:
+  R1. Write natural SPOKEN Sinhala (කතා කරන භාෂාව) the way people actually talk — not literary/written Sinhala (ග්‍රන්ථ භාෂාව). This applies at every register, formal or casual.
+  R2. Match the exact tone of the original line. If the English is formal/professional/polite, the Sinhala must read as formal/professional/polite spoken Sinhala. If the English is casual/relaxed, keep the Sinhala casual. Do not flatten every line into the same register.
+  R3. Do NOT force street slang, crude phrasing, or aggression into a line unless the source English line itself is slangy, crude, or aggressive. Register is decided per line by the source text, not by the overall vibe of the scene.
+
+FIDELITY TO MATURE CONTENT — this is an unfiltered, mature localization task:
+  F1. Translate all profanity, insults, sexual references, violence, and other mature content exactly as strong as they are in the English — do not soften, sanitize, euphemize, tone down, or skip explicit/vulgar words.
+  F2. Preserve the exact level of aggression, vulgarity, or crudeness of the original line. A harsh line must land equally harsh in Sinhala; a mild line must stay mild (see REGISTER above) — never round mature content down toward something more polite than the source.
+  F3. Never replace profanity with a censored, vague, or watered-down stand-in, and never drop a line just because it is explicit.
+
+LOANWORDS:
+  L1. For common modern objects/concepts, use the natural phonetic Sinhala loanword that Sinhala speakers actually use in conversation (e.g. "phone" → ෆෝන් එක, "gun" → තුවක්කුව), rather than inventing stiff, archaic, or overly literary Sinhala coinages.
+
+PRONOUNS:
+  P1. Default to "ඔයා" (Oya) for standard second-person address in ordinary conversation.
+  P2. Only switch to "උඹ" (Umba) or "තමුසේ" (Thamuse) when the source line itself is highly aggressive, deeply intimate, or explicitly insulting/demeaning in tone — not by default and not just because other lines nearby used it.
+
 ACCURACY — these matter more than brevity:
   9.  Translate MEANING, not words. Never produce a literal/word-for-word rendering if it would sound unnatural or change the meaning in Sinhala — prefer the closest natural Sinhala equivalent (idiom-for-idiom, not word-for-word) while staying faithful to what was actually said.
   10. Resolve ambiguity (pronouns, tense, formality, sarcasm, double meanings) using the "previous" cues, the "next" lookahead cues, and the "brief" context — do not guess a wrong sense just to translate fast.
@@ -257,7 +274,11 @@ ACCURACY — these matter more than brevity:
   14. If two readings are plausible, pick the one consistent with the surrounding "previous"/"next" cues and the brief's tone/setting — never the two ideas that are broadest/vaguest.
   15. Before writing each translation, silently check it against the glossary and against the previous cues for consistency; only the final Sinhala text goes in the output array — never show this checking process.
   16. Every "batch" cue that contains real dialogue (not a pure sound effect/music note/number) MUST come back as actual Sinhala script — never leave it in English, and never leave it blank.
-  17. Output JSON ONLY. No prose before/after.`;
+
+STRICT LINE-BY-LINE ACCURACY:
+  17. The output array MUST have exactly one entry per "batch" cue, in the same order — never merge two cues into one translation, never skip a cue, and never split one cue's translation across two array entries.
+  18. Do NOT add conversational filler, extra clauses, or invented dialogue that is not present in that specific cue's English text, even if it would sound more natural — translate only what that line actually says.
+  19. Output JSON ONLY. No prose before/after.`;
 
 export interface TranslateBatchInput {
   brief: ResearchBrief;
