@@ -284,6 +284,15 @@ Rules:
   7. Do NOT add explanations, quotes, brackets, or notes inside translations.
   8. If a line is untranslatable (e.g. pure sound effect, music note), keep the original text unchanged.
 
+ANTI-HALLUCINATION & COMMON PITFALLS (CRITICAL):
+  H1. ZERO HALLUCINATION: Never invent or misuse Sinhala words. If an English idiom ("hurry along", "get going") doesn't have a direct Sinhala equivalent, translate the functional action (e.g., "ඉක්මන් කරන්න", "ඉක්මනට යන්න"). NEVER output unrelated, phonetically confused words (e.g., do not hallucinate words like "හෙම්බිරි" for "hurry").
+  H2. ACTIVE VOICE FOR PERSONAL ACTIONS: Avoid stiff, passive constructions like "අරන් තියෙනවා" (has been taken) when referring to a direct action someone did. 
+      - Bad (Literal/Passive): "Mama, you got your medicine?" -> "අම්මේ, ඔයාට බෙහෙත් අරන් තියෙනවා නේද?"
+      - Good (Active Spoken): -> "අම්මේ, බෙහෙත් ගත්තද?" or "අම්මේ, බෙහෙත් බිව්වද?"
+  H3. NATURAL COMMANDS: When characters are told to move or hurry, use natural imperatives without overcomplicating.
+      - Bad: "You two, be sure to hurry along." -> "ඔයාලා දෙන්නා ඉක්මනට එන්න හෙම්බිරි වෙන්න."
+      - Good: -> "ඔයාලා දෙන්නා ඉක්මන් කරන්න." or "ඔයාලා දෙන්නා ඉක්මනට එන්න."
+
 REGISTER — spoken Sinhala, matched to the original speaker:
   R1. Write natural SPOKEN Sinhala (කතා කරන භාෂාව) the way people actually talk — not literary/written Sinhala (ග්‍රන්ථ භාෂාව). This applies at every register, formal or casual.
   R2. Match the exact tone of the original line. If the English is formal/professional/polite, the Sinhala must read as formal/professional/polite spoken Sinhala. If the English is casual/relaxed, keep the Sinhala casual. Do not flatten every line into the same register.
