@@ -41,138 +41,17 @@
  */
 
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
-// OpenRouter config — must be evaluated before DEFAULT_DEEPSEEK_MODEL /
-// DEFAULT_TRANSLATE_MODEL, because those exported constants are
-// imported by callers (translate-context.ts, ai-search/route.ts) and
-// passed explicitly as `model:` in the request body. They therefore
-// need to resolve to the OpenRouter model id when OpenRouter is active.
-//
-// IMPORTANT: OpenRouter requires the FULLY-QUALIFIED model id
-// (provider/model-variant). The bare name "gemma-4-26b-a4b" is NOT
-// a valid OpenRouter id — OpenRouter returns 404 for it, which the
-// translateBatch halve-and-retry logic silently swallows, producing
-// empty translations and the "shows translating but doesn't update"
-// bug. The correct id confirmed via `GET /api/v1/models` is:
-//   google/gemma-4-26b-a4b-it
-// (Use google/gemma-4-26b-a4b-it:free for the free-tier variant.)
-//
-// If a user explicitly sets OPENROUTER_MODEL we honor their value
-// verbatim — that lets them target the :free variant, gemma-4-31b-it,
-// or any other OpenRouter model without code changes.
-const OPENROUTER_DEFAULT_MODEL = "google/gemma-4-26b-a4b-it";
-
-function isOpenRouterEnabled(): boolean {
-  return !!process.env.OPENROUTER_API_KEY?.trim();
-}
-
-/**
- * Default model for research/one-off calls.
- *
- *   DeepSeek:    deepseek-v4-pro   (override via DEEPSEEK_MODEL)
- *   OpenRouter:  gemma-4-26b-a4b  (override via OPENROUTER_MODEL)
- */
-export const DEFAULT_DEEPSEEK_MODEL = isOpenRouterEnabled()
-  ? (process.env.OPENROUTER_MODEL?.trim() || OPENROUTER_DEFAULT_MODEL)
-  : (process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-pro");
+/** Default model for research/one-off calls. Override with DEEPSEEK_MODEL. */
+export const DEFAULT_DEEPSEEK_MODEL =
+  process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-pro";
 
 /**
  * Default model for high-volume translation batches, where latency
- * compounds across many calls.
- *
- *   DeepSeek:    deepseek-v4-flash  (override via DEEPSEEK_TRANSLATE_MODEL)
- *   OpenRouter:  defaults to OPENROUTER_MODEL (or gemma-4-26b-a4b).
- *                Override via OPENROUTER_TRANSLATE_MODEL.
+ * compounds across many calls. Override with DEEPSEEK_TRANSLATE_MODEL.
  */
-export const DEFAULT_TRANSLATE_MODEL = isOpenRouterEnabled()
-  ? (process.env.OPENROUTER_TRANSLATE_MODEL?.trim() ||
-      process.env.OPENROUTER_MODEL?.trim() ||
-      OPENROUTER_DEFAULT_MODEL)
-  : (process.env.DEEPSEEK_TRANSLATE_MODEL?.trim() || "deepseek-v4-flash");
-
-/**
- * OpenRouter support.
- *
- * OpenRouter exposes the same OpenAI-compatible /chat/completions
- * endpoint as DeepSeek, so the same client can target either
- * provider. We switch based on env vars — no caller changes:
- *
- *   OPENROUTER_API_KEY         — if set, OpenRouter is used INSTEAD
- *                                of DeepSeek for every call.
- *   OPENROUTER_MODEL           — model id for research/one-off calls.
- *                                Defaults to "google/gemma-4-26b-a4b-it"
- *                                (the fully-qualified id that OpenRouter
- *                                requires — the bare "gemma-4-26b-a4b"
- *                                is NOT valid and will 404).
- *   OPENROUTER_TRANSLATE_MODEL — model id for high-volume translation
- *                                batches. Defaults to OPENROUTER_MODEL.
- *   OPENROUTER_REFERER         — optional, sent as HTTP-Referer header
- *                                for OpenRouter attribution.
- *   OPENROUTER_APP_TITLE       — optional, sent as X-Title header.
- *
- * When OpenRouter is active, the DeepSeek-only `thinking` request
- * field is omitted. The OpenAI-standard fields (model, messages,
- * temperature, max_tokens, response_format, stream) are sent exactly
- * as before — OpenRouter's gemma-4-26b-a4b-it supports `response_format`
- * natively per its supported_parameters list.
- */
-interface ProviderConfig {
-  baseUrl: string;
-  apiKey: string;
-  /** Whether to send the DeepSeek V4 `thinking` field in the body. */
-  supportsThinking: boolean;
-  /**
-   * Whether to send `response_format: { type: "json_object" }` when
-   * the caller asks for JSON output. Both DeepSeek and OpenRouter's
-   * Gemma 4 model list `response_format` in their supported parameters,
-   * so this is true for both providers. Kept as a flag in case a
-   * future OpenRouter model rejects it.
-   */
-  supportsJsonResponseFormat: boolean;
-  /** Extra HTTP headers (e.g. OpenRouter attribution headers). */
-  extraHeaders?: Record<string, string>;
-}
-
-/**
- * Resolve which LLM provider + base URL + key to use for this call.
- *
- * The caller still passes a DeepSeek-style `apiKey`, but if OpenRouter
- * is configured we OVERRIDE it with the OpenRouter key from env. This
- * keeps the existing call sites (which all pass `process.env.DEEPSEEK_API_KEY`)
- * working unchanged — they don't need to know which provider is active.
- *
- * The model id is resolved by the caller (via DEFAULT_DEEPSEEK_MODEL /
- * DEFAULT_TRANSLATE_MODEL, which themselves respect the OpenRouter env).
- */
-function resolveProvider(callerApiKey: string): ProviderConfig {
-  if (isOpenRouterEnabled()) {
-    return {
-      baseUrl: OPENROUTER_BASE,
-      apiKey: process.env.OPENROUTER_API_KEY!.trim(),
-      supportsThinking: false,
-      // OpenRouter's metadata (GET /api/v1/models) confirms that
-      // google/gemma-4-26b-a4b-it DOES list `response_format` and
-      // `structured_outputs` in supported_parameters. Sending
-      // `response_format: { type: "json_object" }` is therefore safe
-      // and makes the JSON output reliable (no regex fallback needed).
-      supportsJsonResponseFormat: true,
-      extraHeaders: {
-        "HTTP-Referer":
-          process.env.OPENROUTER_REFERER?.trim() ||
-          "https://subsinhala.app",
-        "X-Title":
-          process.env.OPENROUTER_APP_TITLE?.trim() || "SubSinhala",
-      },
-    };
-  }
-  return {
-    baseUrl: DEEPSEEK_BASE,
-    apiKey: callerApiKey,
-    supportsThinking: true,
-    supportsJsonResponseFormat: true,
-  };
-}
+export const DEFAULT_TRANSLATE_MODEL =
+  process.env.DEEPSEEK_TRANSLATE_MODEL?.trim() || "deepseek-v4-flash";
 
 export interface DeepSeekMessage {
   role: "system" | "user" | "assistant";
@@ -244,10 +123,9 @@ export interface DeepSeekCallResult {
 export async function callDeepSeek(
   opts: DeepSeekCallOptions
 ): Promise<DeepSeekCallResult> {
-  const provider = resolveProvider(opts.apiKey);
-  if (!provider.apiKey) {
+  if (!opts.apiKey) {
     throw new Error(
-      "LLM API key is missing. Set DEEPSEEK_API_KEY (or OPENROUTER_API_KEY to use OpenRouter with gemma-4-26b-a4b) on the server."
+      "DeepSeek API key is missing. Set DEEPSEEK_API_KEY on the server or pass it via the UI settings."
     );
   }
 
@@ -255,33 +133,24 @@ export async function callDeepSeek(
     model: opts.model ?? DEFAULT_DEEPSEEK_MODEL,
     messages: opts.messages,
     stream: false,
+    thinking: { type: opts.thinking ? "enabled" : "disabled" },
   };
-  if (provider.supportsThinking) {
-    body.thinking = { type: opts.thinking ? "enabled" : "disabled" };
-  }
   // Thinking mode ignores temperature — only send it in non-thinking calls.
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.2;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  if (
-    provider.supportsJsonResponseFormat &&
-    opts.responseFormat === "json_object"
-  ) {
+  if (opts.responseFormat === "json_object") {
     body.response_format = { type: "json_object" };
   }
 
   const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
   let res: Response;
   try {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${provider.apiKey}`,
-      "Content-Type": "application/json",
-    };
-    if (provider.extraHeaders) {
-      Object.assign(headers, provider.extraHeaders);
-    }
-    res = await fetch(`${provider.baseUrl}/chat/completions`, {
+    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: "POST",
-      headers,
+      headers: {
+        Authorization: `Bearer ${opts.apiKey}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
       signal,
     });
@@ -323,42 +192,30 @@ export async function callDeepSeek(
 export async function* streamDeepSeek(
   opts: DeepSeekCallOptions
 ): AsyncGenerator<string, void, unknown> {
-  const provider = resolveProvider(opts.apiKey);
-  if (!provider.apiKey) {
-    throw new Error(
-      "LLM API key is missing. Set DEEPSEEK_API_KEY (or OPENROUTER_API_KEY to use OpenRouter with gemma-4-26b-a4b) on the server."
-    );
+  if (!opts.apiKey) {
+    throw new Error("DeepSeek API key is missing.");
   }
   const body: Record<string, unknown> = {
     model: opts.model ?? DEFAULT_DEEPSEEK_MODEL,
     messages: opts.messages,
     stream: true,
+    thinking: { type: opts.thinking ? "enabled" : "disabled" },
   };
-  if (provider.supportsThinking) {
-    body.thinking = { type: opts.thinking ? "enabled" : "disabled" };
-  }
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.3;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  if (
-    provider.supportsJsonResponseFormat &&
-    opts.responseFormat === "json_object"
-  ) {
+  if (opts.responseFormat === "json_object") {
     body.response_format = { type: "json_object" };
   }
 
   const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
   let res: Response;
   try {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${provider.apiKey}`,
-      "Content-Type": "application/json",
-    };
-    if (provider.extraHeaders) {
-      Object.assign(headers, provider.extraHeaders);
-    }
-    res = await fetch(`${provider.baseUrl}/chat/completions`, {
+    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: "POST",
-      headers,
+      headers: {
+        Authorization: `Bearer ${opts.apiKey}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
       signal,
     });
