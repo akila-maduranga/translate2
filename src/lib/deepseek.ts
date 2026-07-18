@@ -41,17 +41,107 @@
  */
 
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1";
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
-/** Default model for research/one-off calls. Override with DEEPSEEK_MODEL. */
-export const DEFAULT_DEEPSEEK_MODEL =
-  process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-pro";
+// OpenRouter config — must be evaluated before DEFAULT_DEEPSEEK_MODEL /
+// DEFAULT_TRANSLATE_MODEL, because those exported constants are
+// imported by callers (translate-context.ts, ai-search/route.ts) and
+// passed explicitly as `model:` in the request body. They therefore
+// need to resolve to the OpenRouter model id when OpenRouter is active.
+const OPENROUTER_DEFAULT_MODEL = "gemma-4-26b-a4b";
+
+function isOpenRouterEnabled(): boolean {
+  return !!process.env.OPENROUTER_API_KEY?.trim();
+}
+
+/**
+ * Default model for research/one-off calls.
+ *
+ *   DeepSeek:    deepseek-v4-pro   (override via DEEPSEEK_MODEL)
+ *   OpenRouter:  gemma-4-26b-a4b  (override via OPENROUTER_MODEL)
+ */
+export const DEFAULT_DEEPSEEK_MODEL = isOpenRouterEnabled()
+  ? (process.env.OPENROUTER_MODEL?.trim() || OPENROUTER_DEFAULT_MODEL)
+  : (process.env.DEEPSEEK_MODEL?.trim() || "deepseek-v4-pro");
 
 /**
  * Default model for high-volume translation batches, where latency
- * compounds across many calls. Override with DEEPSEEK_TRANSLATE_MODEL.
+ * compounds across many calls.
+ *
+ *   DeepSeek:    deepseek-v4-flash  (override via DEEPSEEK_TRANSLATE_MODEL)
+ *   OpenRouter:  defaults to OPENROUTER_MODEL (or gemma-4-26b-a4b).
+ *                Override via OPENROUTER_TRANSLATE_MODEL.
  */
-export const DEFAULT_TRANSLATE_MODEL =
-  process.env.DEEPSEEK_TRANSLATE_MODEL?.trim() || "deepseek-v4-flash";
+export const DEFAULT_TRANSLATE_MODEL = isOpenRouterEnabled()
+  ? (process.env.OPENROUTER_TRANSLATE_MODEL?.trim() ||
+      process.env.OPENROUTER_MODEL?.trim() ||
+      OPENROUTER_DEFAULT_MODEL)
+  : (process.env.DEEPSEEK_TRANSLATE_MODEL?.trim() || "deepseek-v4-flash");
+
+/**
+ * OpenRouter support.
+ *
+ * OpenRouter exposes the same OpenAI-compatible /chat/completions
+ * endpoint as DeepSeek, so the same client can target either
+ * provider. We switch based on env vars — no caller changes:
+ *
+ *   OPENROUTER_API_KEY         — if set, OpenRouter is used INSTEAD
+ *                                of DeepSeek for every call.
+ *   OPENROUTER_MODEL           — model id for research/one-off calls.
+ *                                Defaults to "gemma-4-26b-a4b".
+ *   OPENROUTER_TRANSLATE_MODEL — model id for high-volume translation
+ *                                batches. Defaults to OPENROUTER_MODEL
+ *                                (or "gemma-4-26b-a4b").
+ *   OPENROUTER_REFERER         — optional, sent as HTTP-Referer header
+ *                                for OpenRouter attribution.
+ *   OPENROUTER_APP_TITLE       — optional, sent as X-Title header.
+ *
+ * When OpenRouter is active, the DeepSeek-only `thinking` request
+ * field is omitted — Gemma (and most non-DeepSeek models) reject it.
+ * The OpenAI-standard fields (model, messages, temperature,
+ * max_tokens, response_format, stream) are sent exactly as before.
+ */
+interface ProviderConfig {
+  baseUrl: string;
+  apiKey: string;
+  /** Whether to send the DeepSeek V4 `thinking` field in the body. */
+  supportsThinking: boolean;
+  /** Extra HTTP headers (e.g. OpenRouter attribution headers). */
+  extraHeaders?: Record<string, string>;
+}
+
+/**
+ * Resolve which LLM provider + base URL + key to use for this call.
+ *
+ * The caller still passes a DeepSeek-style `apiKey`, but if OpenRouter
+ * is configured we OVERRIDE it with the OpenRouter key from env. This
+ * keeps the existing call sites (which all pass `process.env.DEEPSEEK_API_KEY`)
+ * working unchanged — they don't need to know which provider is active.
+ *
+ * The model id is resolved by the caller (via DEFAULT_DEEPSEEK_MODEL /
+ * DEFAULT_TRANSLATE_MODEL, which themselves respect the OpenRouter env).
+ */
+function resolveProvider(callerApiKey: string): ProviderConfig {
+  if (isOpenRouterEnabled()) {
+    return {
+      baseUrl: OPENROUTER_BASE,
+      apiKey: process.env.OPENROUTER_API_KEY!.trim(),
+      supportsThinking: false,
+      extraHeaders: {
+        "HTTP-Referer":
+          process.env.OPENROUTER_REFERER?.trim() ||
+          "https://subsinhala.app",
+        "X-Title":
+          process.env.OPENROUTER_APP_TITLE?.trim() || "SubSinhala",
+      },
+    };
+  }
+  return {
+    baseUrl: DEEPSEEK_BASE,
+    apiKey: callerApiKey,
+    supportsThinking: true,
+  };
+}
 
 export interface DeepSeekMessage {
   role: "system" | "user" | "assistant";
@@ -123,9 +213,10 @@ export interface DeepSeekCallResult {
 export async function callDeepSeek(
   opts: DeepSeekCallOptions
 ): Promise<DeepSeekCallResult> {
-  if (!opts.apiKey) {
+  const provider = resolveProvider(opts.apiKey);
+  if (!provider.apiKey) {
     throw new Error(
-      "DeepSeek API key is missing. Set DEEPSEEK_API_KEY on the server or pass it via the UI settings."
+      "LLM API key is missing. Set DEEPSEEK_API_KEY (or OPENROUTER_API_KEY to use OpenRouter with gemma-4-26b-a4b) on the server."
     );
   }
 
@@ -133,8 +224,10 @@ export async function callDeepSeek(
     model: opts.model ?? DEFAULT_DEEPSEEK_MODEL,
     messages: opts.messages,
     stream: false,
-    thinking: { type: opts.thinking ? "enabled" : "disabled" },
   };
+  if (provider.supportsThinking) {
+    body.thinking = { type: opts.thinking ? "enabled" : "disabled" };
+  }
   // Thinking mode ignores temperature — only send it in non-thinking calls.
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.2;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
@@ -145,12 +238,16 @@ export async function callDeepSeek(
   const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
   let res: Response;
   try {
-    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${provider.apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (provider.extraHeaders) {
+      Object.assign(headers, provider.extraHeaders);
+    }
+    res = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
       signal,
     });
@@ -192,15 +289,20 @@ export async function callDeepSeek(
 export async function* streamDeepSeek(
   opts: DeepSeekCallOptions
 ): AsyncGenerator<string, void, unknown> {
-  if (!opts.apiKey) {
-    throw new Error("DeepSeek API key is missing.");
+  const provider = resolveProvider(opts.apiKey);
+  if (!provider.apiKey) {
+    throw new Error(
+      "LLM API key is missing. Set DEEPSEEK_API_KEY (or OPENROUTER_API_KEY to use OpenRouter with gemma-4-26b-a4b) on the server."
+    );
   }
   const body: Record<string, unknown> = {
     model: opts.model ?? DEFAULT_DEEPSEEK_MODEL,
     messages: opts.messages,
     stream: true,
-    thinking: { type: opts.thinking ? "enabled" : "disabled" },
   };
+  if (provider.supportsThinking) {
+    body.thinking = { type: opts.thinking ? "enabled" : "disabled" };
+  }
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.3;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
   if (opts.responseFormat === "json_object") {
@@ -210,12 +312,16 @@ export async function* streamDeepSeek(
   const { signal, cleanup } = withTimeout(opts.timeoutMs, opts.signal);
   let res: Response;
   try {
-    res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${provider.apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (provider.extraHeaders) {
+      Object.assign(headers, provider.extraHeaders);
+    }
+    res = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(body),
       signal,
     });
