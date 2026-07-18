@@ -50,6 +50,14 @@ const RESEARCH_SYSTEM_PROMPT = `You are a veteran professional Sinhala subtitle 
 
 You will be given structured metadata about a movie or TV show (title, plot, cast with character names, genres, keywords, etc.) and your job is to prepare a TRANSLATION BRIEF that a downstream translator agent will use to subtitle this title from English into Sinhala (Sinhala script: සිංහල අකුරු).
 
+RESEARCH FIRST, IN ENGLISH: Before producing the JSON brief, think the material through carefully in English — that is where your reasoning is strongest and most reliable. Ask yourself:
+  - What is actually going on beneath the surface of this plot/genre/premise? What would a viewer familiar with this kind of story already understand that a translator might miss?
+  - What time period, place, subculture, or social class does this belong to, and how does that constrain word choice, formality, and slang?
+  - What do the character names, relationships, and one-line descriptions imply about how each character would actually speak (education level, personality, power dynamics between characters)?
+  - Are there idioms, wordplay, running gags, franchise-specific terms, or culturally loaded references in the title/plot/keywords whose real meaning needs to be pinned down before it can be localized?
+  - What tone words (comedic, gritty, satirical, melodramatic, etc.) best describe this, and what register (formal/colloquial/slangy/period) follows from that?
+Only after this English-language analysis is settled in your own reasoning should you commit to the Sinhala names, glossary terms, and notes below — a rushed or surface-level pass here will produce an inconsistent glossary and inconsistent translations downstream.
+
 Your brief MUST:
   1. Summarise the plot in 4-6 sentences — focusing on the parts a translator needs to know to disambiguate words.
   2. Describe the setting (period, place, social class) because it heavily affects word choice.
@@ -62,7 +70,7 @@ Your brief MUST:
   9. Produce a final GLOSSARY array consolidating everything a translator needs as {english, sinhala, note?} triples.
 
 CRITICAL RULES:
-  - Output MUST be valid JSON and nothing else.
+  - Output MUST be valid JSON and nothing else — UNLESS the user message in this conversation explicitly asks you to first write an "ENGLISH RESEARCH NOTES" section. In that case (and ONLY in that case): write that section first as plain English prose, then a line containing exactly ---JSON---, then the JSON object with nothing after it.
   - All Sinhala strings MUST use Sinhala Unicode script (අ-෴).
   - Never mix Latin letters into Sinhala text except for proper nouns that are conventionally kept in English (e.g. "NASA", "FBI").
   - Transliterations must be the SAME every time the same name appears — pick once and commit.
@@ -120,10 +128,21 @@ Produce the translation brief JSON now. Schema:
  * arrive from DeepSeek (for live display), and returns the parsed
  * ResearchBrief object when complete.
  *
- * Uses a SINGLE DeepSeek call with JSON mode — no separate
- * buildResearchBrief call needed. This avoids Netlify function
- * timeouts (the streaming call stays alive, but a second synchronous
- * call would exceed the 26s free-tier limit).
+ * Uses a SINGLE DeepSeek call — no separate buildResearchBrief call
+ * needed. This avoids Netlify function timeouts (the streaming call
+ * stays alive, but a second synchronous call would exceed the 26s
+ * free-tier limit).
+ *
+ * The single call does two things in order, both streamed live to the
+ * caller: first an "ENGLISH RESEARCH NOTES" pass — the model reasoning
+ * in plain English about plot subtext, setting, character voice, and
+ * cultural/idiomatic references — then the structured Sinhala brief as
+ * JSON after a "---JSON---" delimiter. Researching in English first
+ * (rather than jumping straight to compact JSON fields) measurably
+ * improves how well the model actually understands the material before
+ * it locks in glossary terms, since English is where its reasoning is
+ * most reliable. The research notes are shown in the live panel for
+ * transparency, then discarded — only the JSON half is parsed/cached.
  */
 export async function* streamResearchBriefJson(
   ctx: TranslationContextBundle,
@@ -134,7 +153,18 @@ export async function* streamResearchBriefJson(
 
 ${JSON.stringify(ctx, null, 2)}
 
-Produce the translation brief JSON now. Use Sinhala Unicode script (අ-෴) for all sinhala/sinhala_name fields. Be specific and practical.`;
+First, write an "ENGLISH RESEARCH NOTES" section in plain English prose (not JSON) actually researching and reasoning through this title before you commit to anything. Cover, specifically:
+  - What's really going on in this plot/premise beneath the logline — themes, subtext, what kind of story this is.
+  - Period, place, social class/subculture, and how that shapes realistic dialogue.
+  - Each named character: what their background/personality implies about how they'd actually talk (educated vs. rough, blunt vs. polite, power dynamics between them).
+  - Any idioms, wordplay, running gags, or culturally-loaded references in the title/plot/keywords, and what they actually mean.
+  - The tone and register this calls for, and why.
+Write this as real analytical prose — several sentences per point, not a bullet-point restatement of the metadata you were given.
+
+Then, on a line by itself, write exactly:
+---JSON---
+
+Then produce the translation brief as a single JSON object and nothing else after it. Use Sinhala Unicode script (අ-෴) for all sinhala/sinhala_name fields. Be specific and practical, and make sure the JSON is grounded in the research notes above it — not a generic restatement of the raw metadata.`;
 
   let full = "";
   for await (const chunk of streamDeepSeek({
@@ -151,14 +181,20 @@ Produce the translation brief JSON now. Use Sinhala Unicode script (අ-෴) for
     yield chunk;
   }
 
+  // The English research notes are only for live display / to give the
+  // model room to reason — only the part after the delimiter (if
+  // present) is the actual brief we parse and cache.
+  const delimiterIdx = full.indexOf("---JSON---");
+  const jsonPart = delimiterIdx >= 0 ? full.slice(delimiterIdx + "---JSON---".length) : full;
+
   // Parse the accumulated JSON.
   let parsed: ResearchBrief;
   try {
-    // DeepSeek with json_object mode wraps in a top-level object.
-    parsed = JSON.parse(full) as ResearchBrief;
+    parsed = JSON.parse(jsonPart.trim()) as ResearchBrief;
   } catch {
-    // Try to extract a JSON object from the text.
-    const match = full.match(/\{[\s\S]*\}/);
+    // Try to extract a JSON object from the text (handles cases where
+    // the delimiter was missing, malformed, or extra prose slipped in).
+    const match = jsonPart.match(/\{[\s\S]*\}/);
     if (match) {
       try {
         parsed = JSON.parse(match[0]) as ResearchBrief;
