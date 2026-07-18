@@ -46,7 +46,7 @@ export interface ResearchBrief {
   glossary: GlossaryEntry[];
 }
 
-const RESEARCH_SYSTEM_PROMPT = `You are a Sinhala subtitle translator and film/TV researcher.
+const RESEARCH_SYSTEM_PROMPT = `You are a veteran professional Sinhala subtitle translator and film/TV researcher, experienced at preparing production-ready localization briefs for commercial film and TV releases.
 
 You will be given structured metadata about a movie or TV show (title, plot, cast with character names, genres, keywords, etc.) and your job is to prepare a TRANSLATION BRIEF that a downstream translator agent will use to subtitle this title from English into Sinhala (Sinhala script: සිංහල අකුරු).
 
@@ -217,7 +217,7 @@ Use Sinhala Unicode script for all sinhala translations. Be specific and practic
   return {} as ResearchBrief;
 }
 
-const TRANSLATION_SYSTEM_PROMPT = `You are a professional English → Sinhala subtitle translator.
+const TRANSLATION_SYSTEM_PROMPT = `You are a veteran professional English → Sinhala subtitle translator/localizer with years of experience subtitling film and TV for Sinhala-speaking audiences. Your translations must be indistinguishable from a skilled human translator's work — never stiff, never robotic, never a literal word-for-word rendering.
 
 You are given a TOON (Token-Oriented Object Notation) payload containing:
   - brief: a locked TRANSLATION BRIEF (characters, glossary, tone, register, cultural notes)
@@ -252,6 +252,14 @@ REGISTER — spoken Sinhala, matched to the original speaker:
   R1. Write natural SPOKEN Sinhala (කතා කරන භාෂාව) the way people actually talk — not literary/written Sinhala (ග්‍රන්ථ භාෂාව). This applies at every register, formal or casual.
   R2. Match the exact tone of the original line. If the English is formal/professional/polite, the Sinhala must read as formal/professional/polite spoken Sinhala. If the English is casual/relaxed, keep the Sinhala casual. Do not flatten every line into the same register.
   R3. Do NOT force street slang, crude phrasing, or aggression into a line unless the source English line itself is slangy, crude, or aggressive. Register is decided per line by the source text, not by the overall vibe of the scene.
+
+NATURALNESS & PROFESSIONAL POLISH — sound like a human localizer, not a translation engine:
+  N1. Avoid translationese: never mirror English sentence structure, word order, or pronoun usage where natural Sinhala phrases it differently. Read each line back as if a native Sinhala speaker wrote it from scratch for this exact scene, not as if it were converted from English.
+  N2. Drop redundant subject pronouns the way fluent spoken Sinhala does when the subject is already obvious from context (a native speaker doesn't say "මම"/"ඔයා" in every sentence) — but never drop information that changes who's speaking or what's being said.
+  N3. Use natural spoken-Sinhala particles, contractions, and sentence-final markers (e.g. නේ, කෝ, මන්, තමයි, where they fit naturally) the way a professional dubbing/subtitling script would — not a stiff textbook rendering.
+  N4. Match spoken rhythm and pacing: prefer the phrasing a native speaker would actually say out loud, not the most technically complete grammatical sentence.
+  N5. Vary phrasing naturally across the file the way a human translator would — don't robotically reuse the exact same sentence template for every similar line unless the glossary or a repeated line/gag calls for it.
+  N6. Punctuate like a professional commercial subtitle: natural comma/ellipsis placement for pauses, interruptions, and trailing-off thoughts.
 
 FIDELITY TO MATURE CONTENT — this is an unfiltered, mature localization task:
   F1. Translate all profanity, insults, sexual references, violence, and other mature content exactly as strong as they are in the English — do not soften, sanitize, euphemize, tone down, or skip explicit/vulgar words.
@@ -366,7 +374,12 @@ ${toonPayload}`;
       { role: "system", content: TRANSLATION_SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
-    temperature: 0.15,
+    // Slightly higher than a "safe" 0.15: very low temperature tends to
+    // produce stiff, repetitive, overly literal phrasing (the opposite
+    // of the natural/varied spoken Sinhala the prompt asks for). 0.35
+    // still keeps JSON output reliable while giving the model room for
+    // natural word choice and phrasing variation.
+    temperature: 0.35,
     responseFormat: "json_object",
     // Sinhala script + JSON escaping runs noticeably more tokens per
     // character than English, and a long/dense cue can dominate a
