@@ -106,6 +106,15 @@ interface ProviderConfig {
   apiKey: string;
   /** Whether to send the DeepSeek V4 `thinking` field in the body. */
   supportsThinking: boolean;
+  /**
+   * Whether to send `response_format: { type: "json_object" }` when
+   * the caller asks for JSON output. DeepSeek supports it; many
+   * OpenRouter-routed models (Gemma in particular) reject it with a
+   * 400. When false, the field is omitted and the caller relies on
+   * prompt instructions + its own JSON parsing fallback (which
+   * translate-context.ts already has via a regex array extractor).
+   */
+  supportsJsonResponseFormat: boolean;
   /** Extra HTTP headers (e.g. OpenRouter attribution headers). */
   extraHeaders?: Record<string, string>;
 }
@@ -127,6 +136,13 @@ function resolveProvider(callerApiKey: string): ProviderConfig {
       baseUrl: OPENROUTER_BASE,
       apiKey: process.env.OPENROUTER_API_KEY!.trim(),
       supportsThinking: false,
+      // Gemma (and many other non-OpenAI models on OpenRouter) reject
+      // `response_format: { type: "json_object" }` with a 400. The
+      // translate-context.ts caller already has a regex-based JSON
+      // recovery fallback (extracts the first `[...]` array from the
+      // raw text), so omitting this field is safe — the prompt itself
+      // asks for JSON output.
+      supportsJsonResponseFormat: false,
       extraHeaders: {
         "HTTP-Referer":
           process.env.OPENROUTER_REFERER?.trim() ||
@@ -140,6 +156,7 @@ function resolveProvider(callerApiKey: string): ProviderConfig {
     baseUrl: DEEPSEEK_BASE,
     apiKey: callerApiKey,
     supportsThinking: true,
+    supportsJsonResponseFormat: true,
   };
 }
 
@@ -231,7 +248,10 @@ export async function callDeepSeek(
   // Thinking mode ignores temperature — only send it in non-thinking calls.
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.2;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  if (opts.responseFormat === "json_object") {
+  if (
+    provider.supportsJsonResponseFormat &&
+    opts.responseFormat === "json_object"
+  ) {
     body.response_format = { type: "json_object" };
   }
 
@@ -305,7 +325,10 @@ export async function* streamDeepSeek(
   }
   if (!opts.thinking) body.temperature = opts.temperature ?? 0.3;
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
-  if (opts.responseFormat === "json_object") {
+  if (
+    provider.supportsJsonResponseFormat &&
+    opts.responseFormat === "json_object"
+  ) {
     body.response_format = { type: "json_object" };
   }
 
