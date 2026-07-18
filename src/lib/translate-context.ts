@@ -424,7 +424,7 @@ ${toonPayload}`;
     // of the natural/varied spoken Sinhala the prompt asks for). 0.35
     // still keeps JSON output reliable while giving the model room for
     // natural word choice and phrasing variation.
-    temperature: 0.35,
+    temperature: 0.25,
     responseFormat: "json_object",
     // Sinhala script + JSON escaping runs noticeably more tokens per
     // character than English, and a long/dense cue can dominate a
